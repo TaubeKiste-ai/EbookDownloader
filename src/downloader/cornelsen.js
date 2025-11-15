@@ -665,38 +665,10 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             loginFormData[name] = t.text || "";
         });
 
-        const loginFormInputs = loginForm.querySelectorAll('input');
-        const findInput = (predicate) => {
-            for (const input of loginFormInputs) {
-                if (predicate(input)) {
-                    return input;
-                }
-            }
-            return null;
-        };
-        const lower = (value) => (value || "").toLowerCase();
-        var usernameInput = findInput(input => {
-            const type = lower(input.getAttribute("type"));
-            if (type && !["text", "email"].includes(type)) return false;
-            const name = lower(input.getAttribute("name"));
-            const id = lower(input.getAttribute("id"));
-            const placeholder = lower(input.getAttribute("placeholder"));
-            return /user|mail|login/.test(name)
-                || /user|mail|login/.test(id)
-                || /user|mail|login/.test(placeholder);
-        }) || findInput(input => {
-            const type = lower(input.getAttribute("type"));
-            return type === "text" || type === "email" || !type;
-        });
-        var passwordInput = findInput(input => {
-            const type = lower(input.getAttribute("type"));
-            if (type === "password") return true;
-            if (type && type !== "text") return false;
-            const name = lower(input.getAttribute("name"));
-            const id = lower(input.getAttribute("id"));
-            const placeholder = lower(input.getAttribute("placeholder"));
-            return /pass|pwd/.test(name) || /pass|pwd/.test(id) || /pass/.test(placeholder);
-        });
+        var usernameInput = loginForm.querySelector('input[name*="user" i]')
+            || loginForm.querySelector('input[name*="email" i]')
+            || loginForm.querySelector('input[type="email"], input[type="text"]');
+        var passwordInput = loginForm.querySelector('input[type="password"], input[name*="pass" i]');
         if (!usernameInput || !passwordInput) {
             console.log("Could not login - 752");
             return;
