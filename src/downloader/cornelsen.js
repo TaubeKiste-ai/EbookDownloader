@@ -56,7 +56,14 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
     });
 
-    function get_using_id_token(id_token) {
+    function get_using_tokens(tokenInput) {
+        const tokens = typeof tokenInput === 'string' ? { id_token: tokenInput } : (tokenInput || {});
+        const id_token = tokens.id_token || tokens.access_token;
+        if (!id_token) {
+            console.log('Could not login - 755');
+            return;
+        }
+        const uma_token = tokens.access_token || id_token;
         axiosInstance({
             method: 'post',
             url: 'https://mein.cornelsen.de/bibliothek/api',
@@ -128,7 +135,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                 method: "get",
                                 url: "https://unterrichtsmanager.cornelsen.de/uma20/api/v2/umazip/" + productId,
                                 headers: {
-                                    "authorization": "Bearer " + id_token,
+                                    "authorization": "Bearer " + uma_token,
                                 },
                             }).then(res => {
                                 axios({
@@ -551,7 +558,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     }
 
     if (email === "token") {
-        get_using_id_token(passwd);
+        get_using_tokens(passwd);
         return;
     }
 
@@ -649,7 +656,10 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                 console.log(`Could not get token - 754.5`)
                 return null;
             }
-            return tokenResponse?.data?.id_token || null;
+            return {
+                id_token: tokenResponse?.data?.id_token || null,
+                access_token: tokenResponse?.data?.access_token || null,
+            };
         };
 
         let authorizePage;
@@ -675,11 +685,11 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                 const existingCode = extractAuthorizationCode(redirectTarget);
                 if (existingCode) {
                     const existingToken = await exchangeAuthorizationCode(existingCode);
-                    if (!existingToken) {
+                    if (!existingToken || (!existingToken.id_token && !existingToken.access_token)) {
                         return;
                     }
                     console.log("Logged in successfully");
-                    get_using_id_token(existingToken);
+                    get_using_tokens(existingToken);
                     return;
                 }
 
@@ -876,12 +886,12 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             return;
         }
 
-        const id_token = await exchangeAuthorizationCode(code);
-        if (!id_token) {
+        const tokens = await exchangeAuthorizationCode(code);
+        if (!tokens || (!tokens.id_token && !tokens.access_token)) {
             return;
         }
 
-        get_using_id_token(id_token);
+        get_using_tokens(tokens);
     }
 
     performManualLogin();
