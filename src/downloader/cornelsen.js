@@ -22,7 +22,7 @@ const path = require('path');
 const { url } = require('inspector');
 const transformationMatrix = require('transformation-matrix')
 
-const AdmZip  = require('adm-zip')
+const AdmZip = require('adm-zip')
 const consumers = require('node:stream/consumers')
 const { PassThrough } = require('stream')
 const { zeroPad } = require('../utils')
@@ -40,6 +40,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
         }
     });
+
     function get_using_id_token(id_token) {
         axiosInstance({
             method: 'post',
@@ -102,7 +103,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                             }
                         ]
                     }).then(promptres => {
-                        if(promptres.method == "new") {
+                        if (promptres.method == "new") {
                             var filename = name.replace(/[^a-zA-Z0-9 \(\)_\-,\.]/gi, '') + `_lossless`;
                             var tmpFolder = "./out/DownloadTemp/" + filename + "/";
                             if (deleteAllOldTempImages && fs.existsSync(tmpFolder)) fs.rmSync(tmpFolder, {
@@ -124,7 +125,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                     let zip = new AdmZip(res.data)
                                     zip.extractAllTo(tmpFolder, deleteAllOldTempImages)
                                     console.log("trying to open uma.json")
-                                    var uma = JSON.parse(fs.readFileSync(path.join(tmpFolder,"uma.json")))
+                                    var uma = JSON.parse(fs.readFileSync(path.join(tmpFolder, "uma.json")))
 
                                     let ebooks = []
                                     uma.ebookIsbnSbNum
@@ -134,7 +135,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                             fileName: filename + "_sf.pdf",
                                             comment: "Schülerfassung"
                                         })
-                                    
+
                                     uma.ebookIsbnLbNum
                                         && fs.existsSync(path.join(tmpFolder, uma.ebookIsbnLbNum + "_lf.pdf")) &&
                                         ebooks.push({
@@ -149,7 +150,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                     let cipherargs = Buffer.from("YWVzLTEyOC1jYmN8R" + `CtEeEpTRn0yQjtrLTtDfQ==`, 'base64').toString("ascii").split("|")
                                     cipherargs = cipherargs.concat(cipherargs[1].split("").reverse().join(""))
 
-                                    for(let ebook of ebooks) {
+                                    for (let ebook of ebooks) {
                                         let cipher = crypto.createDecipheriv(...cipherargs)
                                         let input = fs.createReadStream(ebook.encryptedPath)
                                         new Promise((resolve, reject) => {
@@ -168,15 +169,15 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                         let pagesAnnotations = {}
                                         let pageMapping = {}
 
-                                        function addOutlineChapter(chapter, root=false) {
+                                        function addOutlineChapter(chapter, root = false) {
                                             let ref = doc.context.nextRef()
                                             let map = new Map()
-                                            if(root) {
+                                            if (root) {
                                                 map.set(pdflib.PDFName.Type, pdflib.PDFString.of("Outlines"))
                                             } else {
                                                 map.set(pdflib.PDFName.Title, pdflib.PDFString.of(chapter.headline))
                                             }
-                                            if(chapter.pages && chapter.pages.length > 0) {
+                                            if (chapter.pages && chapter.pages.length > 0) {
                                                 let arr = pdflib.PDFArray.withContext(doc.context)
                                                 arr.push(doc.getPage(chapter.pages[0]["pageNo"]).ref)
                                                 arr.push(pdflib.PDFName.of("XYZ"))
@@ -186,26 +187,26 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                                 map.set(pdflib.PDFName.of("Dest"), arr)
 
 
-                                                for(let page of chapter.pages) {
+                                                for (let page of chapter.pages) {
                                                     pageMapping[page.name] = page["pageNo"]
-                                                    if(page.sections && page.sections.length > 0) {
+                                                    if (page.sections && page.sections.length > 0) {
                                                         let origin = doc.getPage(page["pageNo"])
                                                         //let refs = []
-                                                        if(!pagesAnnotations[page["pageNo"]]) pagesAnnotations[page["pageNo"]] = []
-                                                        for(let section of page.sections) {
-                                                            if(!section.assets || section.assets.length == 0) continue
-                                                            for(let asset of section.assets) {
+                                                        if (!pagesAnnotations[page["pageNo"]]) pagesAnnotations[page["pageNo"]] = []
+                                                        for (let section of page.sections) {
+                                                            if (!section.assets || section.assets.length == 0) continue
+                                                            for (let asset of section.assets) {
                                                                 let realasset = uma.assets.find(a => a.id == asset.id)
-                                                                if(realasset.type == "PAGE" && realasset.link || realasset.type == "ASSET_REFERENCE") pagesAnnotations[page["pageNo"]].push(
+                                                                if (realasset.type == "PAGE" && realasset.link || realasset.type == "ASSET_REFERENCE") pagesAnnotations[page["pageNo"]].push(
                                                                     {
                                                                         Rect: [
                                                                             section.xPosition * origin.getWidth(),
-                                                                            (1-section.yPosition) * origin.getHeight(),
+                                                                            (1 - section.yPosition) * origin.getHeight(),
                                                                             (section.xPosition + section.width) * origin.getWidth(),
-                                                                            (1-(section.yPosition + section.height)) * origin.getHeight()
+                                                                            (1 - (section.yPosition + section.height)) * origin.getHeight()
                                                                         ],
-                                                                        ...realasset.type == "PAGE" ? {page: realasset.link} : {},
-                                                                        ...realasset.type == "ASSET_REFERENCE" ? {url: realasset.threeQUrl || realasset.link} : {},
+                                                                        ...realasset.type == "PAGE" ? { page: realasset.link } : {},
+                                                                        ...realasset.type == "ASSET_REFERENCE" ? { url: realasset.threeQUrl || realasset.link } : {},
                                                                     }
                                                                 )
                                                             }
@@ -213,11 +214,11 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                                     }
                                                 }
                                             }
-                                            if(chapter.chapters && chapter.chapters.length > 0) {
+                                            if (chapter.chapters && chapter.chapters.length > 0) {
                                                 let chaptersDicts = chapter.chapters.map((c) => addOutlineChapter(c))
                                                 chaptersDicts.forEach((chapterDict, idx) => {
-                                                    if(idx > 0) chapterDict.set(pdflib.PDFName.of("Prev"), doc.context.getObjectRef(chaptersDicts[idx - 1]))
-                                                    if(idx < chaptersDicts.length - 1) chapterDict.set(pdflib.PDFName.of("Next"), doc.context.getObjectRef(chaptersDicts[idx + 1]))
+                                                    if (idx > 0) chapterDict.set(pdflib.PDFName.of("Prev"), doc.context.getObjectRef(chaptersDicts[idx - 1]))
+                                                    if (idx < chaptersDicts.length - 1) chapterDict.set(pdflib.PDFName.of("Next"), doc.context.getObjectRef(chaptersDicts[idx + 1]))
                                                     chapterDict.set(pdflib.PDFName.of("Parent"), ref)
                                                 })
                                                 map.set(pdflib.PDFName.of("First"), doc.context.getObjectRef(chaptersDicts[0]))
@@ -238,11 +239,13 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                                     Type: "Annot",
                                                     Subtype: "Link",
                                                     Rect: anno.Rect,
-                                                    ...anno.page ? {Dest: [doc.getPage(pageMapping[anno.page]).ref, "XYZ", null, null, null]} : {},
-                                                    ...anno.url ? {A: {
-                                                        S: "URI",
-                                                        URI: pdflib.PDFString.of(anno.url)
-                                                    }} : {},
+                                                    ...anno.page ? { Dest: [doc.getPage(pageMapping[anno.page]).ref, "XYZ", null, null, null] } : {},
+                                                    ...anno.url ? {
+                                                        A: {
+                                                            S: "URI",
+                                                            URI: pdflib.PDFString.of(anno.url)
+                                                        }
+                                                    } : {},
                                                 }))
                                             ))
                                         })
@@ -267,7 +270,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                             }).then(res => {
                                 var parsed = HTMLParser.parse(res.data);
                                 var jsfiles = parsed.querySelectorAll("script").map(i => i.getAttribute("src")).filter(i => i != null);
-                                var mainjsrelativepath = jsfiles.map(i => i.match(/(?:https:\/\/ebook.cornelsen.de\/)?(main\..*\.js)/)).filter(i=>i)[0][1]
+                                var mainjsrelativepath = jsfiles.map(i => i.match(/(?:https:\/\/ebook.cornelsen.de\/)?(main\..*\.js)/)).filter(i => i)[0][1]
                                 axiosInstance({
                                     method: 'get',
                                     url: "https://ebook.cornelsen.de/" + mainjsrelativepath
@@ -354,36 +357,6 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                                         fs.mkdir(tmpFolder, {
                                                             recursive: true
                                                         }, async () => {
-                                                            /*Promise.all(pagesData.pages.map(p => {
-                                                                return new Promise((resolve, reject) => {
-                                                                    axiosInstance({
-                                                                        method: 'get',
-                                                                        url: `https://pspdfkit.prod.cornelsen.de/i/d/${values.license?.salesProduct?.fullVersionId}/h/${pspdfkitauthdata.layerHandle}/page-${p.pageIndex}-dimensions-${Math.floor(p.width * values2.quality)}-${Math.floor(p.height * values2.quality)}-tile-0-0-${Math.floor(p.width * values2.quality)}-${Math.floor(p.height * values2.quality)}`,
-                                                                        headers: {
-                                                                            "x-pspdfkit-image-token": pspdfkitauthdata.imageToken,
-                                                                            "Accept": "image/webp,*//*",
-                                                                            "Referer": "https://ebook.cornelsen.de/",
-                                                                        },
-                                                                        responseType: 'stream',
-                                                                        timeout: 60000,
-                                                                        httpsAgent: new https.Agent({ keepAlive: true }),
-                                                                    }).then(res => {
-                                                                        //fs.createWriteStream(`${tmpFolder}${zeroPad(p.pageIndex, 4)}-${p.pageLabel}.webp`).write(res.data);
-                                                                        res.data.pipe(fs.createWriteStream(`${tmpFolder}${zeroPad(p.pageIndex, 4)}-${p.pageLabel}.webp`))
-                                                                        resolve();
-                                                                    }).catch(err => {
-                                                                        console.log(`Could not load page ${p.pageIndex} - 760`)
-                                                                        console.log(err)
-                                                                        reject();
-                                                                    })
-                                                                })
-                                                            })).then(() => {
-                                                                console.log(`Downloaded all Pages`)
-                                                            }).catch(err => {
-                                                                console.log(`Could not load all pages - 761`)
-                                                                console.log(err)
-                                                            })*/
-
                                                             var pagesText = {};
 
                                                             var errored = false;
@@ -561,10 +534,12 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             console.log(err)
         });
     }
-    if(email === "token") {
+
+    if (email === "token") {
         get_using_id_token(passwd);
         return;
     }
+
     async function performManualLogin() {
         try {
             await axiosInstance({
