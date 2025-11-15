@@ -571,6 +571,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         const code_verifier = crypto.randomBytes(48).toString('hex');
         const state = crypto.randomBytes(16).toString('hex');
         const code_challenge = crypto.createHash('sha256').update(code_verifier).digest().toString('base64url');
+        const nonce = crypto.randomBytes(16).toString('hex');
         const authorizeParams = {
             scope: "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum",
             response_type: "code",
@@ -580,6 +581,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             state: state,
             code_challenge: code_challenge,
             code_challenge_method: "S256",
+            nonce: nonce,
         };
 
         let authorizePage;
@@ -596,7 +598,12 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
 
         var parsed = HTMLParser.parse(authorizePage.data);
-        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"]');
+        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"]')
+            || parsed.querySelector('form[action^="/oxauth/login"]')
+            || parsed.querySelector('form[action*="login"]')
+            || parsed.querySelector('form[id*="login" i]')
+            || parsed.querySelector('form[name*="login" i]')
+            || parsed.querySelector('form');
         if (!loginForm) {
             console.log("Could not login - 752");
             return;
@@ -606,11 +613,37 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         loginForm.querySelectorAll("input").forEach(i => {
             var name = i.getAttribute("name");
             if (!name) return;
-            loginFormData[name] = i.getAttribute("value") || "";
+
+            var type = (i.getAttribute("type") || "").toLowerCase();
+            if (type === "checkbox" || type === "radio") {
+                if (!i.hasAttribute("checked")) return;
+            }
+
+            if (!(name in loginFormData)) {
+                loginFormData[name] = i.getAttribute("value") || "";
+            }
         });
 
-        var usernameInput = loginForm.querySelector('input[type="email"], input[type="text"]');
-        var passwordInput = loginForm.querySelector('input[type="password"]');
+        loginForm.querySelectorAll("select").forEach(s => {
+            var name = s.getAttribute("name");
+            if (!name) return;
+            if (name in loginFormData) return;
+            var selected = s.querySelector("option[selected]") || s.querySelector("option");
+            if (!selected) return;
+            loginFormData[name] = selected.getAttribute("value") || selected.text;
+        });
+
+        loginForm.querySelectorAll("textarea").forEach(t => {
+            var name = t.getAttribute("name");
+            if (!name) return;
+            if (name in loginFormData) return;
+            loginFormData[name] = t.text || "";
+        });
+
+        var usernameInput = loginForm.querySelector('input[name*="user" i]')
+            || loginForm.querySelector('input[name*="email" i]')
+            || loginForm.querySelector('input[type="email"], input[type="text"]');
+        var passwordInput = loginForm.querySelector('input[type="password"], input[name*="pass" i]');
         if (!usernameInput || !passwordInput) {
             console.log("Could not login - 752");
             return;
@@ -624,13 +657,31 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             loginFormData[submitInput.getAttribute("name")] = submitInput.getAttribute("value") || "";
         }
 
+        var submitButton = loginForm.querySelector('button[type="submit"]');
+        if (submitButton && submitButton.getAttribute("name")) {
+            loginFormData[submitButton.getAttribute("name")] = submitButton.getAttribute("value") || "";
+        }
+
+        const authorizeResponseUrl = authorizePage?.request?.res?.responseUrl || 'https://id.cornelsen.de/oxauth/authorize.htm';
+        const loginAction = loginForm.getAttribute("action") || "/oxauth/login.htm";
+        let loginUrl;
+        try {
+            loginUrl = new URL(loginAction, authorizeResponseUrl).toString();
+        } catch (err) {
+            console.log("Could not resolve login form action");
+            console.log(err);
+            console.log("Could not login - 752");
+            return;
+        }
+
         let loginResponse;
         try {
             loginResponse = await axiosInstance({
                 method: 'post',
-                url: 'https://id.cornelsen.de/oxauth/login.htm',
+                url: loginUrl,
                 headers: {
                     "content-type": "application/x-www-form-urlencoded",
+                    "referer": authorizeResponseUrl,
                 },
                 data: qs.stringify(loginFormData),
                 maxRedirects: 0,
