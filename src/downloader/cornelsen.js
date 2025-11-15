@@ -63,7 +63,34 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             console.log('Could not login - 755');
             return;
         }
-        const uma_token = tokens.access_token || id_token;
+        const tokenCandidates = Array.from(new Set([
+            tokens.uma_access_token,
+            tokens.id_token,
+            tokens.access_token,
+            id_token,
+        ].filter(Boolean)));
+        const fetchUmaZip = async (productId) => {
+            let lastError;
+            for (const candidate of tokenCandidates) {
+                try {
+                    return await axiosInstance({
+                        method: "get",
+                        url: "https://unterrichtsmanager.cornelsen.de/uma20/api/v2/umazip/" + productId,
+                        headers: {
+                            "authorization": "Bearer " + candidate,
+                        },
+                    });
+                } catch (err) {
+                    const status = err?.response?.status;
+                    if (status === 401 || status === 403) {
+                        lastError = err;
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+            throw lastError || new Error("Could not get uma zip token");
+        };
         axiosInstance({
             method: 'post',
             url: 'https://mein.cornelsen.de/bibliothek/api',
@@ -103,12 +130,29 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                     },
                     data: {
                         operationName: "startProduct",
-                        query: "mutation startProduct($productId: ProductId!) {\n  startProduct(productId: $productId)\n}\n",
+                        query: "mutation startProduct($productId: ProductId!, $usagePlatformId: UsagePlatformId) {\n  startProduct(productId: $productId, usagePlatformId: $usagePlatformId)\n}\n",
                         variables: {
-                            productId: productId
+                            productId: productId,
+                            usagePlatformId: values.license?.usageProduct?.usagePlatformId || null,
                         }
                     }
                 }).then((res) => {
+                    const usagePlatformId = values.license?.usageProduct?.usagePlatformId;
+                    if (usagePlatformId && productId) {
+                        axiosInstance({
+                            method: 'get',
+                            url: `https://produkte.cornelsen.de/url/${usagePlatformId}/${productId}/`,
+                            headers: {
+                                "authorization": "Bearer " + id_token,
+                            },
+                            maxRedirects: 0,
+                            validateStatus: (status) => status >= 200 && status < 400,
+                        }).catch((err) => {
+                            if (!(err?.response?.status && err.response.status >= 300 && err.response.status < 400)) {
+                                console.log('Could not prewarm usage platform');
+                            }
+                        });
+                    }
                     var name = (values.license?.usageProduct?.heading || values.license?.salesProduct?.heading) + " - " + (values.license?.usageProduct?.subheading || values.license?.salesProduct?.subheading);
                     prompts({
                         type: "select",
@@ -131,14 +175,8 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                             if (deleteAllOldTempImages && fs.existsSync(tmpFolder)) fs.rmSync(tmpFolder, {
                                 recursive: true,
                             });
-                            axios({
-                                method: "get",
-                                url: "https://unterrichtsmanager.cornelsen.de/uma20/api/v2/umazip/" + productId,
-                                headers: {
-                                    "authorization": "Bearer " + uma_token,
-                                },
-                            }).then(res => {
-                                axios({
+                            fetchUmaZip(productId).then(res => {
+                                axiosInstance({
                                     method: "get",
                                     url: res.data.url,
                                     responseType: "arraybuffer"
