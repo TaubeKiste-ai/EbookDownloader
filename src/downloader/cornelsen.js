@@ -541,29 +541,18 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     }
 
     async function performManualLogin() {
+        // Initial warm-up requests used to ensure cookies are set may loop in some environments when proxied.
+        // Continue with the manual login flow even if they fail so the username/password path still works.
         try {
-            await axiosInstance({
-                method: 'get',
-                url: 'https://www.cornelsen.de/',
-            });
-        } catch (err) {
-            console.log("Could not connect - 750");
-            console.log(err);
-            return;
-        }
-
-        try {
-            await axiosInstance({
-                method: 'get',
-                url: 'https://www.cornelsen.de/shop/ccustomer/oauth/autoLogin?timestamp=' + Math.floor(Date.now() / 1000),
-            });
+            await followRedirects('https://www.cornelsen.de/shop/ccustomer/oauth/autoLogin?timestamp=' + Math.floor(Date.now() / 1000));
         } catch (err) {
             if (err?.response?.status === 503) {
                 console.log("Auto login endpoint unavailable (503), continuing with manual login");
+            } else if (err?.message?.includes('Too many redirects')) {
+                console.log("Auto login endpoint redirected too often, continuing with manual login");
             } else {
                 console.log("Could not login - 751");
                 console.log(err);
-                return;
             }
         }
 
@@ -571,24 +560,45 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         const code_verifier = crypto.randomBytes(48).toString('hex');
         const state = crypto.randomBytes(16).toString('hex');
         const code_challenge = crypto.createHash('sha256').update(code_verifier).digest().toString('base64url');
-        const authorizeParams = {
-            scope: "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum",
-            response_type: "code",
-            response_mode: "query",
-            redirect_uri: "https://unterrichtsmanager.cornelsen.de/index.html",
-            client_id: clientId,
-            state: state,
-            code_challenge: code_challenge,
-            code_challenge_method: "S256",
-        };
+        const authorizeUrl = new URL('https://id.cornelsen.de/oxauth/authorize.htm');
+        authorizeUrl.searchParams.set('scope', "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum");
+        authorizeUrl.searchParams.set('response_type', "code");
+        authorizeUrl.searchParams.set('response_mode', "query");
+        authorizeUrl.searchParams.set('redirect_uri', "https://unterrichtsmanager.cornelsen.de/index.html");
+        authorizeUrl.searchParams.set('client_id', clientId);
+        authorizeUrl.searchParams.set('state', state);
+        authorizeUrl.searchParams.set('code_challenge', code_challenge);
+        authorizeUrl.searchParams.set('code_challenge_method', "S256");
+
+        async function followRedirects(url, max = 20) {
+            let currentUrl = url;
+            for (let i = 0; i < max; i++) {
+                try {
+                    const res = await axiosInstance({
+                        method: 'get',
+                        url: currentUrl,
+                        maxRedirects: 0,
+                        validateStatus: (status) => status >= 200 && status < 400,
+                    });
+                    if (res.status >= 300 && res.status < 400 && res.headers?.location) {
+                        const nextUrl = new URL(res.headers.location, currentUrl).toString();
+                        if (nextUrl === currentUrl) {
+                            throw new Error('Redirect loop detected');
+                        }
+                        currentUrl = nextUrl;
+                        continue;
+                    }
+                    return res;
+                } catch (err) {
+                    throw err;
+                }
+            }
+            throw new Error('Too many redirects');
+        }
 
         let authorizePage;
         try {
-            authorizePage = await axiosInstance({
-                method: 'get',
-                url: 'https://id.cornelsen.de/oxauth/authorize.htm',
-                params: authorizeParams,
-            });
+            authorizePage = await followRedirects(authorizeUrl.toString());
         } catch (err) {
             console.log("Could not login - 752");
             console.log(err);
@@ -596,7 +606,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
 
         var parsed = HTMLParser.parse(authorizePage.data);
-        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"]');
+        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"], form[action^="/oxauth/login"]');
         if (!loginForm) {
             console.log("Could not login - 752");
             return;
@@ -654,28 +664,53 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
         console.log("Logged in successfully")
 
-        let authorizeRedirect;
-        try {
-            authorizeRedirect = await axiosInstance({
-                method: "get",
-                url: "https://id.cornelsen.de/oxauth/restv1/authorize",
-                params: authorizeParams,
-                maxRedirects: 0,
-                validateStatus: (status) => {
-                    return status >= 200 && status < 400;
+        let authorizationLocation = loginResponse.headers?.location;
+        if (!authorizationLocation) {
+            console.log(`Could not authorize code_challenge - 754.4`)
+            return;
+        }
+
+        authorizationLocation = new URL(authorizationLocation, 'https://id.cornelsen.de').toString();
+
+        async function resolveAuthorization(url) {
+            let currentUrl = url;
+            for (let i = 0; i < 10; i++) {
+                const response = await axiosInstance({
+                    method: 'get',
+                    url: currentUrl,
+                    maxRedirects: 0,
+                    validateStatus: (status) => status >= 200 && status < 400,
+                });
+
+                if (response.status >= 300 && response.status < 400 && response.headers?.location) {
+                    const nextUrl = new URL(response.headers.location, currentUrl).toString();
+                    if (nextUrl.startsWith('https://unterrichtsmanager.cornelsen.de/')) {
+                        return nextUrl;
+                    }
+                    currentUrl = nextUrl;
+                    continue;
                 }
-            });
+
+                return null;
+            }
+            throw new Error('Too many redirects while authorizing');
+        }
+
+        let finalLocation;
+        try {
+            finalLocation = await resolveAuthorization(authorizationLocation);
         } catch (err) {
             console.log(err);
             console.log(`Could not authorize code_challenge - 754.4`);
             return;
         }
 
-        if (!authorizeRedirect.headers.location) {
+        if (!finalLocation) {
             console.log(`Could not authorize code_challenge - 754.4`)
             return;
         }
-        var codeMatch = authorizeRedirect.headers.location.match(/code=([^&]+)/);
+
+        var codeMatch = finalLocation.match(/code=([^&]+)/);
         if (!codeMatch) {
             console.log(`Could not authorize code_challenge - 754.4`)
             return;
