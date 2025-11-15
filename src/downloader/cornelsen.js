@@ -13,6 +13,9 @@ var spawn = require('child_process').spawn
 var Iconv = require('iconv').Iconv;
 const sizeOf = require('image-size')
 const pdflib = require("pdf-lib")
+const { HttpCookieAgent, HttpsCookieAgent, createCookieAgent } = require('http-cookie-agent/http');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 var HTMLParser = require('node-html-parser');
 var parseString = require('xml2js').parseString;
@@ -32,9 +35,21 @@ axiosCookieJarSupport(axios);
 function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     console.log("Logging in and getting Book list")
     const cookieJar = new tough.CookieJar();
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || null;
+    const AgentWithCookiesHttp = proxyUrl ? createCookieAgent(HttpProxyAgent) : HttpCookieAgent;
+    const AgentWithCookiesHttps = proxyUrl ? createCookieAgent(HttpsProxyAgent) : HttpsCookieAgent;
+    const httpAgent = proxyUrl
+        ? new AgentWithCookiesHttp(proxyUrl, { cookies: { jar: cookieJar } })
+        : new AgentWithCookiesHttp({ cookies: { jar: cookieJar } });
+    const httpsAgent = proxyUrl
+        ? new AgentWithCookiesHttps(proxyUrl, { cookies: { jar: cookieJar } })
+        : new AgentWithCookiesHttps({ cookies: { jar: cookieJar } });
+
     const axiosInstance = axios.create({
-        jar: cookieJar,
         withCredentials: true,
+        proxy: false,
+        httpAgent,
+        httpsAgent,
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
@@ -545,21 +560,31 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             await axiosInstance({
                 method: 'get',
                 url: 'https://www.cornelsen.de/',
+                maxRedirects: 0,
+                validateStatus: (status) => status >= 200 && status < 400,
             });
         } catch (err) {
-            console.log("Could not connect - 750");
-            console.log(err);
-            return;
+            if (err.code === 'ERR_FR_TOO_MANY_REDIRECTS') {
+                console.log('Encountered redirect loop while priming session, continuing');
+            } else {
+                console.log("Could not connect - 750");
+                console.log(err);
+                return;
+            }
         }
 
         try {
             await axiosInstance({
                 method: 'get',
                 url: 'https://www.cornelsen.de/shop/ccustomer/oauth/autoLogin?timestamp=' + Math.floor(Date.now() / 1000),
+                maxRedirects: 0,
+                validateStatus: (status) => status >= 200 && status < 400,
             });
         } catch (err) {
             if (err?.response?.status === 503) {
                 console.log("Auto login endpoint unavailable (503), continuing with manual login");
+            } else if (err.code === 'ERR_FR_TOO_MANY_REDIRECTS') {
+                console.log("Auto login redirect loop encountered, continuing with manual login");
             } else {
                 console.log("Could not login - 751");
                 console.log(err);
