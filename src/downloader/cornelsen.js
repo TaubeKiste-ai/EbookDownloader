@@ -13,6 +13,9 @@ var spawn = require('child_process').spawn
 var Iconv = require('iconv').Iconv;
 const sizeOf = require('image-size')
 const pdflib = require("pdf-lib")
+const { HttpCookieAgent, HttpsCookieAgent, createCookieAgent } = require('http-cookie-agent/http');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 var HTMLParser = require('node-html-parser');
 var parseString = require('xml2js').parseString;
@@ -32,16 +35,62 @@ axiosCookieJarSupport(axios);
 function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     console.log("Logging in and getting Book list")
     const cookieJar = new tough.CookieJar();
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || null;
+    const AgentWithCookiesHttp = proxyUrl ? createCookieAgent(HttpProxyAgent) : HttpCookieAgent;
+    const AgentWithCookiesHttps = proxyUrl ? createCookieAgent(HttpsProxyAgent) : HttpsCookieAgent;
+    const httpAgent = proxyUrl
+        ? new AgentWithCookiesHttp(proxyUrl, { cookies: { jar: cookieJar } })
+        : new AgentWithCookiesHttp({ cookies: { jar: cookieJar } });
+    const httpsAgent = proxyUrl
+        ? new AgentWithCookiesHttps(proxyUrl, { cookies: { jar: cookieJar } })
+        : new AgentWithCookiesHttps({ cookies: { jar: cookieJar } });
+
     const axiosInstance = axios.create({
-        jar: cookieJar,
         withCredentials: true,
+        proxy: false,
+        httpAgent,
+        httpsAgent,
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
         }
     });
 
-    function get_using_id_token(id_token) {
+    function get_using_tokens(tokenInput) {
+        const tokens = typeof tokenInput === 'string' ? { id_token: tokenInput } : (tokenInput || {});
+        const id_token = tokens.id_token || tokens.access_token;
+        if (!id_token) {
+            console.log('Could not login - 755');
+            return;
+        }
+        const tokenCandidates = Array.from(new Set([
+            tokens.uma_access_token,
+            tokens.id_token,
+            tokens.access_token,
+            id_token,
+        ].filter(Boolean)));
+        const fetchUmaZip = async (productId) => {
+            let lastError;
+            for (const candidate of tokenCandidates) {
+                try {
+                    return await axiosInstance({
+                        method: "get",
+                        url: "https://unterrichtsmanager.cornelsen.de/uma20/api/v2/umazip/" + productId,
+                        headers: {
+                            "authorization": "Bearer " + candidate,
+                        },
+                    });
+                } catch (err) {
+                    const status = err?.response?.status;
+                    if (status === 401 || status === 403) {
+                        lastError = err;
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+            throw lastError || new Error("Could not get uma zip token");
+        };
         axiosInstance({
             method: 'post',
             url: 'https://mein.cornelsen.de/bibliothek/api',
@@ -81,12 +130,29 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                     },
                     data: {
                         operationName: "startProduct",
-                        query: "mutation startProduct($productId: ProductId!) {\n  startProduct(productId: $productId)\n}\n",
+                        query: "mutation startProduct($productId: ProductId!, $usagePlatformId: UsagePlatformId) {\n  startProduct(productId: $productId, usagePlatformId: $usagePlatformId)\n}\n",
                         variables: {
-                            productId: productId
+                            productId: productId,
+                            usagePlatformId: values.license?.usageProduct?.usagePlatformId || null,
                         }
                     }
                 }).then((res) => {
+                    const usagePlatformId = values.license?.usageProduct?.usagePlatformId;
+                    if (usagePlatformId && productId) {
+                        axiosInstance({
+                            method: 'get',
+                            url: `https://produkte.cornelsen.de/url/${usagePlatformId}/${productId}/`,
+                            headers: {
+                                "authorization": "Bearer " + id_token,
+                            },
+                            maxRedirects: 0,
+                            validateStatus: (status) => status >= 200 && status < 400,
+                        }).catch((err) => {
+                            if (!(err?.response?.status && err.response.status >= 300 && err.response.status < 400)) {
+                                console.log('Could not prewarm usage platform');
+                            }
+                        });
+                    }
                     var name = (values.license?.usageProduct?.heading || values.license?.salesProduct?.heading) + " - " + (values.license?.usageProduct?.subheading || values.license?.salesProduct?.subheading);
                     prompts({
                         type: "select",
@@ -109,14 +175,8 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                             if (deleteAllOldTempImages && fs.existsSync(tmpFolder)) fs.rmSync(tmpFolder, {
                                 recursive: true,
                             });
-                            axios({
-                                method: "get",
-                                url: "https://unterrichtsmanager.cornelsen.de/uma20/api/v2/umazip/" + productId,
-                                headers: {
-                                    "authorization": "Bearer " + id_token,
-                                },
-                            }).then(res => {
-                                axios({
+                            fetchUmaZip(productId).then(res => {
+                                axiosInstance({
                                     method: "get",
                                     url: res.data.url,
                                     responseType: "arraybuffer"
@@ -536,7 +596,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     }
 
     if (email === "token") {
-        get_using_id_token(passwd);
+        get_using_tokens(passwd);
         return;
     }
 
@@ -545,21 +605,31 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             await axiosInstance({
                 method: 'get',
                 url: 'https://www.cornelsen.de/',
+                maxRedirects: 0,
+                validateStatus: (status) => status >= 200 && status < 400,
             });
         } catch (err) {
-            console.log("Could not connect - 750");
-            console.log(err);
-            return;
+            if (err.code === 'ERR_FR_TOO_MANY_REDIRECTS') {
+                console.log('Encountered redirect loop while priming session, continuing');
+            } else {
+                console.log("Could not connect - 750");
+                console.log(err);
+                return;
+            }
         }
 
         try {
             await axiosInstance({
                 method: 'get',
                 url: 'https://www.cornelsen.de/shop/ccustomer/oauth/autoLogin?timestamp=' + Math.floor(Date.now() / 1000),
+                maxRedirects: 0,
+                validateStatus: (status) => status >= 200 && status < 400,
             });
         } catch (err) {
             if (err?.response?.status === 503) {
                 console.log("Auto login endpoint unavailable (503), continuing with manual login");
+            } else if (err.code === 'ERR_FR_TOO_MANY_REDIRECTS') {
+                console.log("Auto login redirect loop encountered, continuing with manual login");
             } else {
                 console.log("Could not login - 751");
                 console.log(err);
@@ -571,6 +641,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         const code_verifier = crypto.randomBytes(48).toString('hex');
         const state = crypto.randomBytes(16).toString('hex');
         const code_challenge = crypto.createHash('sha256').update(code_verifier).digest().toString('base64url');
+        const nonce = crypto.randomBytes(16).toString('hex');
         const authorizeParams = {
             scope: "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum",
             response_type: "code",
@@ -580,15 +651,100 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             state: state,
             code_challenge: code_challenge,
             code_challenge_method: "S256",
+            nonce: nonce,
+        };
+
+        const authorizeEntryUrl = 'https://id.cornelsen.de/oxauth/authorize.htm';
+        const resolveAuthorizeUrl = (location, base) => {
+            try {
+                return new URL(location, base || authorizeEntryUrl).toString();
+            } catch (err) {
+                return null;
+            }
+        };
+        const extractAuthorizationCode = (location) => {
+            if (!location) return null;
+            try {
+                const parsed = new URL(location, authorizeEntryUrl);
+                return parsed.searchParams.get('code');
+            } catch (err) {
+                return null;
+            }
+        };
+        const exchangeAuthorizationCode = async (authCode) => {
+            if (!authCode) return null;
+            let tokenResponse;
+            try {
+                tokenResponse = await axiosInstance({
+                    method: 'post',
+                    url: "https://id.cornelsen.de/oxauth/restv1/token",
+                    headers: {
+                        "content-type": "application/x-www-form-urlencoded",
+                    },
+                    data: qs.stringify({
+                        grant_type: "authorization_code",
+                        redirect_uri: "https://unterrichtsmanager.cornelsen.de/index.html",
+                        code: authCode,
+                        code_verifier: code_verifier,
+                        client_id: clientId,
+                    })
+                });
+            } catch (err) {
+                console.log(err)
+                console.log(`Could not get token - 754.5`)
+                return null;
+            }
+            return {
+                id_token: tokenResponse?.data?.id_token || null,
+                access_token: tokenResponse?.data?.access_token || null,
+            };
         };
 
         let authorizePage;
         try {
-            authorizePage = await axiosInstance({
+            const authorizeResponse = await axiosInstance({
                 method: 'get',
-                url: 'https://id.cornelsen.de/oxauth/authorize.htm',
+                url: authorizeEntryUrl,
                 params: authorizeParams,
+                maxRedirects: 0,
+                validateStatus: (status) => status >= 200 && status < 400,
             });
+            if (authorizeResponse.status >= 300 && authorizeResponse.status < 400 && authorizeResponse.headers.location) {
+                const redirectTarget = resolveAuthorizeUrl(
+                    authorizeResponse.headers.location,
+                    authorizeResponse?.request?.res?.responseUrl || authorizeEntryUrl
+                );
+                if (!redirectTarget) {
+                    console.log("Could not resolve authorize redirect");
+                    console.log("Could not login - 752");
+                    return;
+                }
+
+                const existingCode = extractAuthorizationCode(redirectTarget);
+                if (existingCode) {
+                    const existingToken = await exchangeAuthorizationCode(existingCode);
+                    if (!existingToken || (!existingToken.id_token && !existingToken.access_token)) {
+                        return;
+                    }
+                    console.log("Logged in successfully");
+                    get_using_tokens(existingToken);
+                    return;
+                }
+
+                try {
+                    authorizePage = await axiosInstance({
+                        method: 'get',
+                        url: redirectTarget,
+                    });
+                } catch (err) {
+                    console.log("Could not load login page");
+                    console.log(err);
+                    console.log("Could not login - 752");
+                    return;
+                }
+            } else {
+                authorizePage = authorizeResponse;
+            }
         } catch (err) {
             console.log("Could not login - 752");
             console.log(err);
@@ -596,7 +752,12 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
 
         var parsed = HTMLParser.parse(authorizePage.data);
-        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"]');
+        var loginForm = parsed.querySelector('form[action="/oxauth/login.htm"]')
+            || parsed.querySelector('form[action^="/oxauth/login"]')
+            || parsed.querySelector('form[action*="login"]')
+            || parsed.querySelector('form[id*="login" i]')
+            || parsed.querySelector('form[name*="login" i]')
+            || parsed.querySelector('form');
         if (!loginForm) {
             console.log("Could not login - 752");
             return;
@@ -606,11 +767,65 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         loginForm.querySelectorAll("input").forEach(i => {
             var name = i.getAttribute("name");
             if (!name) return;
-            loginFormData[name] = i.getAttribute("value") || "";
+
+            var type = (i.getAttribute("type") || "").toLowerCase();
+            if (type === "checkbox" || type === "radio") {
+                if (!i.hasAttribute("checked")) return;
+            }
+
+            if (!(name in loginFormData)) {
+                loginFormData[name] = i.getAttribute("value") || "";
+            }
         });
 
-        var usernameInput = loginForm.querySelector('input[type="email"], input[type="text"]');
-        var passwordInput = loginForm.querySelector('input[type="password"]');
+        loginForm.querySelectorAll("select").forEach(s => {
+            var name = s.getAttribute("name");
+            if (!name) return;
+            if (name in loginFormData) return;
+            var selected = s.querySelector("option[selected]") || s.querySelector("option");
+            if (!selected) return;
+            loginFormData[name] = selected.getAttribute("value") || selected.text;
+        });
+
+        loginForm.querySelectorAll("textarea").forEach(t => {
+            var name = t.getAttribute("name");
+            if (!name) return;
+            if (name in loginFormData) return;
+            loginFormData[name] = t.text || "";
+        });
+
+        const loginFormInputs = loginForm.querySelectorAll('input');
+        const findInput = (predicate) => {
+            for (const input of loginFormInputs) {
+                if (predicate(input)) {
+                    return input;
+                }
+            }
+            return null;
+        };
+        const lower = (value) => (value || "").toLowerCase();
+        var usernameInput = findInput(input => {
+            const type = lower(input.getAttribute("type"));
+            if (type && !["text", "email"].includes(type)) return false;
+            const name = lower(input.getAttribute("name"));
+            const id = lower(input.getAttribute("id"));
+            const placeholder = lower(input.getAttribute("placeholder"));
+            return /user|mail|login/.test(name)
+                || /user|mail|login/.test(id)
+                || /user|mail|login/.test(placeholder);
+        }) || findInput(input => {
+            const type = lower(input.getAttribute("type"));
+            return type === "text" || type === "email" || !type;
+        });
+        var passwordInput = findInput(input => {
+            const type = lower(input.getAttribute("type"));
+            if (type === "password") return true;
+            if (type && type !== "text") return false;
+            const name = lower(input.getAttribute("name"));
+            const id = lower(input.getAttribute("id"));
+            const placeholder = lower(input.getAttribute("placeholder"));
+            return /pass|pwd/.test(name) || /pass|pwd/.test(id) || /pass/.test(placeholder);
+        });
         if (!usernameInput || !passwordInput) {
             console.log("Could not login - 752");
             return;
@@ -624,13 +839,33 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
             loginFormData[submitInput.getAttribute("name")] = submitInput.getAttribute("value") || "";
         }
 
+        var submitButton = loginForm.querySelector('button[type="submit"]');
+        if (submitButton && submitButton.getAttribute("name")) {
+            loginFormData[submitButton.getAttribute("name")] = submitButton.getAttribute("value") || "";
+        }
+
+        const authorizeResponseUrl = authorizePage?.request?.res?.responseUrl
+            || authorizePage?.config?.url
+            || authorizeEntryUrl;
+        const loginAction = loginForm.getAttribute("action") || "/oxauth/login.htm";
+        let loginUrl;
+        try {
+            loginUrl = new URL(loginAction, authorizeResponseUrl).toString();
+        } catch (err) {
+            console.log("Could not resolve login form action");
+            console.log(err);
+            console.log("Could not login - 752");
+            return;
+        }
+
         let loginResponse;
         try {
             loginResponse = await axiosInstance({
                 method: 'post',
-                url: 'https://id.cornelsen.de/oxauth/login.htm',
+                url: loginUrl,
                 headers: {
                     "content-type": "application/x-www-form-urlencoded",
+                    "referer": authorizeResponseUrl,
                 },
                 data: qs.stringify(loginFormData),
                 maxRedirects: 0,
@@ -654,59 +889,47 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
         }
         console.log("Logged in successfully")
 
-        let authorizeRedirect;
-        try {
-            authorizeRedirect = await axiosInstance({
-                method: "get",
-                url: "https://id.cornelsen.de/oxauth/restv1/authorize",
-                params: authorizeParams,
-                maxRedirects: 0,
-                validateStatus: (status) => {
-                    return status >= 200 && status < 400;
-                }
-            });
-        } catch (err) {
-            console.log(err);
-            console.log(`Could not authorize code_challenge - 754.4`);
+        const requestAuthorizationCode = async () => {
+            let authorizeRedirect;
+            try {
+                authorizeRedirect = await axiosInstance({
+                    method: "get",
+                    url: "https://id.cornelsen.de/oxauth/restv1/authorize",
+                    params: authorizeParams,
+                    maxRedirects: 0,
+                    validateStatus: (status) => {
+                        return status >= 200 && status < 400;
+                    }
+                });
+            } catch (err) {
+                console.log(err);
+                console.log(`Could not authorize code_challenge - 754.4`);
+                return null;
+            }
+
+            if (!authorizeRedirect.headers.location) {
+                console.log(`Could not authorize code_challenge - 754.4`)
+                return null;
+            }
+            const code = extractAuthorizationCode(authorizeRedirect.headers.location);
+            if (!code) {
+                console.log(`Could not authorize code_challenge - 754.4`)
+                return null;
+            }
+            return code;
+        };
+
+        const code = await requestAuthorizationCode();
+        if (!code) {
             return;
         }
 
-        if (!authorizeRedirect.headers.location) {
-            console.log(`Could not authorize code_challenge - 754.4`)
-            return;
-        }
-        var codeMatch = authorizeRedirect.headers.location.match(/code=([^&]+)/);
-        if (!codeMatch) {
-            console.log(`Could not authorize code_challenge - 754.4`)
-            return;
-        }
-        var code = codeMatch[1];
-
-        let tokenResponse;
-        try {
-            tokenResponse = await axiosInstance({
-                method: 'post',
-                url: "https://id.cornelsen.de/oxauth/restv1/token",
-                headers: {
-                    "content-type": "application/x-www-form-urlencoded",
-                },
-                data: qs.stringify({
-                    grant_type: "authorization_code",
-                    redirect_uri: "https://unterrichtsmanager.cornelsen.de/index.html",
-                    code: code,
-                    code_verifier: code_verifier,
-                    client_id: clientId,
-                })
-            });
-        } catch (err) {
-            console.log(err)
-            console.log(`Could not get token - 754.5`)
+        const tokens = await exchangeAuthorizationCode(code);
+        if (!tokens || (!tokens.id_token && !tokens.access_token)) {
             return;
         }
 
-        var id_token = tokenResponse.data.id_token;
-
-        get_using_id_token(id_token);
+        get_using_tokens(tokens);
     }
 
     performManualLogin();
